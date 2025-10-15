@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: youtube-cutter-api
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn main:app -c gunicorn.conf.py"
+    plan: free
