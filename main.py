@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
 import ffmpeg
@@ -9,6 +10,19 @@ import io
 from typing import List
 
 app = FastAPI(title="YouTube Video Cutter API")
+
+# Configuration CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",  # Next.js dev
+        "http://localhost:3001",  # Au cas où
+        "https://ton-app.vercel.app",  # Production (remplace par ton domaine)
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 class VideoRequest(BaseModel):
     youtube_url: str
