@@ -56,15 +56,27 @@ async def cut_video(request: VideoRequest):
         if start_time >= end_time:
             raise HTTPException(status_code=400, detail="Le timestamp de début doit être inférieur au timestamp de fin")
         
-        # Configuration yt-dlp avec options améliorées
+        # Configuration yt-dlp avec options pour contourner les restrictions
         ydl_opts = {
-            'format': 'worst[ext=mp4]/worst',  # Utilise la plus basse qualité pour éviter les problèmes
+            'format': 'worst[ext=mp4]/worst',
             'outtmpl': '%(title)s.%(ext)s',
             'no_warnings': False,
             'extractaudio': False,
             'ignoreerrors': True,
             'writesubtitles': False,
             'writeautomaticsub': False,
+            # Options pour contourner les restrictions YouTube
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['hls', 'dash'],
+                    'player_skip': ['configs', 'webpage']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            },
+            'cookiefile': None,
+            'age_limit': None,
         }
         
         # Créer un dossier temporaire
@@ -86,7 +98,35 @@ async def cut_video(request: VideoRequest):
                         ydl_download.download([request.youtube_url])
                         
                 except yt_dlp.DownloadError as e:
-                    raise HTTPException(status_code=400, detail=f"Erreur de téléchargement YouTube: {str(e)}")
+                    # Essayer avec des options plus permissives
+                    if "Sign in to confirm" in str(e) or "bot" in str(e):
+                        try:
+                            # Options alternatives pour contourner la détection de bot
+                            alt_opts = ydl_opts.copy()
+                            alt_opts.update({
+                                'format': 'best[height<=480]/worst',
+                                'extractor_args': {
+                                    'youtube': {
+                                        'skip': ['hls', 'dash', 'translated_subs'],
+                                        'player_skip': ['js', 'configs', 'webpage']
+                                    }
+                                },
+                                'http_headers': {
+                                    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                    'Accept-Language': 'en-US,en;q=0.9',
+                                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                                }
+                            })
+                            
+                            with yt_dlp.YoutubeDL(alt_opts) as ydl_alt:
+                                info = ydl_alt.extract_info(request.youtube_url, download=False)
+                                video_title = info.get('title', 'video')
+                                alt_opts['outtmpl'] = os.path.join(temp_dir, '%(title)s.%(ext)s')
+                                ydl_alt.download([request.youtube_url])
+                        except:
+                            raise HTTPException(status_code=400, detail="Cette vidéo nécessite une authentification ou n'est pas accessible. Essayez avec une autre vidéo.")
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Erreur de téléchargement YouTube: {str(e)}")
                 except Exception as e:
                     raise HTTPException(status_code=400, detail=f"Erreur lors de l'extraction des infos: {str(e)}")
             
