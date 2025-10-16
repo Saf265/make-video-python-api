@@ -1,5 +1,5 @@
 fastapi
 uvicorn[standard]
-yt-dlp
 ffmpeg-python
 pydantic
+python-multipart
