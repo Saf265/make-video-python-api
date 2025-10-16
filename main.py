@@ -2,11 +2,12 @@ from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import yt_dlp
 import ffmpeg
 import tempfile
 import os
 import io
-from typing import List
+from typing import List, Optional
 
 app = FastAPI(title="YouTube Video Cutter API")
 
@@ -40,16 +41,20 @@ def time_to_seconds(time_str: str) -> float:
 
 @app.post("/cut-video")
 async def cut_video(
-    video_file: UploadFile = File(...),
-    timeCode: str = Form(...)  # Format: "00:00:10,00:00:30"
+    timeCode: str = Form(...),  # Format: "00:00:10,00:00:30"
+    video_file: Optional[UploadFile] = File(None),
+    youtubeVideoUrl: Optional[str] = Form(None)
 ):
     """
-    Découpe une vidéo MP4 uploadée selon le timeCode fourni
+    Découpe une vidéo (uploadée ou YouTube) selon le timeCode fourni
     """
     try:
-        # Validation du fichier
-        if not video_file.content_type or not video_file.content_type.startswith('video/'):
-            raise HTTPException(status_code=400, detail="Le fichier doit être une vidéo")
+        # Validation : il faut soit un fichier, soit une URL YouTube
+        if not video_file and not youtubeVideoUrl:
+            raise HTTPException(status_code=400, detail="Il faut fournir soit video_file soit youtubeVideoUrl")
+        
+        if video_file and youtubeVideoUrl:
+            raise HTTPException(status_code=400, detail="Fournir soit video_file soit youtubeVideoUrl, pas les deux")
         
         # Parser le timeCode
         try:
@@ -72,16 +77,57 @@ async def cut_video(
         
         # Créer un dossier temporaire
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Sauvegarder le fichier uploadé
-            input_file = os.path.join(temp_dir, f"input_{video_file.filename}")
-            with open(input_file, "wb") as f:
-                content = await video_file.read()
-                f.write(content)
             
-            # Nom du fichier de sortie
-            base_name = os.path.splitext(video_file.filename or "video")[0]
-            safe_name = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            safe_name = safe_name[:30]  # Limiter la longueur
+            if youtubeVideoUrl:
+                # Télécharger depuis YouTube
+                ydl_opts = {
+                    'format': 'worst[ext=mp4]/worst',
+                    'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                    'no_warnings': False,
+                    'extractaudio': False,
+                    'ignoreerrors': True,
+                    'writesubtitles': False,
+                    'writeautomaticsub': False,
+                    'extractor_args': {
+                        'youtube': {
+                            'skip': ['hls', 'dash'],
+                            'player_skip': ['configs', 'webpage']
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    },
+                }
+                
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(youtubeVideoUrl, download=False)
+                        video_title = info.get('title', 'youtube_video')
+                        ydl.download([youtubeVideoUrl])
+                        
+                        # Trouver le fichier téléchargé
+                        downloaded_files = [f for f in os.listdir(temp_dir) if f.endswith(('.mp4', '.webm', '.mkv'))]
+                        if not downloaded_files:
+                            raise HTTPException(status_code=500, detail="Échec du téléchargement YouTube")
+                        
+                        input_file = os.path.join(temp_dir, downloaded_files[0])
+                        safe_name = "".join(c for c in video_title if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
+                        
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"Erreur YouTube: {str(e)}")
+            
+            else:
+                # Fichier uploadé
+                if not video_file.content_type or not video_file.content_type.startswith('video/'):
+                    raise HTTPException(status_code=400, detail="Le fichier doit être une vidéo")
+                
+                input_file = os.path.join(temp_dir, f"input_{video_file.filename}")
+                with open(input_file, "wb") as f:
+                    content = await video_file.read()
+                    f.write(content)
+                
+                base_name = os.path.splitext(video_file.filename or "video")[0]
+                safe_name = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
             
             output_file = os.path.join(temp_dir, f"cut_{safe_name}.mp4")
             filename = f"cut_{safe_name}_{start_seconds}s-{end_seconds}s.mp4"
@@ -125,7 +171,7 @@ async def cut_video(
 async def root():
     return {
         "message": "Video Cutter API", 
-        "usage": "POST /cut-video avec video_file (MP4) et timeCode '[00:00:10,00:00:30]'"
+        "usage": "POST /cut-video avec (video_file OU youtubeVideoUrl) et timeCode '[00:00:10,00:00:30]'"
     }
 
 @app.get("/health")
